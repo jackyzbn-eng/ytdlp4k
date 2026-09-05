@@ -10,9 +10,9 @@ ytdlp4k - YouTube 4K 视频下载器（tkinter GUI）
   - 智能帧率：优先下载目标帧率原版流，无则 ffmpeg 转码兜底
   - GPU 优先转码（NVENC），无 GPU 自动回退 CPU
 
-依赖：
-  - Python 3.9+，pip install yt-dlp
-  - ffmpeg/ffprobe（PATH 中），转码与属性查看需要
+依赖（绿色分发，免 Python）：
+  - yt-dlp.exe：下载内核，首次运行在“必需环境检测”页一键自动下载
+  - ffmpeg/ffprobe：音视频合并与转码，同样自动下载
   - tkinter（Windows 官方 Python 自带）
 
 运行：python ytdlp4k.pyw    （或打包为 exe，见 README）
@@ -70,16 +70,16 @@ def expand_path(p):
 
 
 class App:
-    def __init__(self, root):
-        self.root = root
+    """下载页：保存目录 / 链接 / 帧率 / 按钮 / 日志（嵌入主窗口内容区）"""
+
+    def __init__(self, root, parent):
+        self.root = root          # 主窗口 Tk：用于 after / messagebox / Toplevel
         self.cfg = load_config()
         self.last_file = None
-        root.title("ytdlp4k - YouTube 视频下载器")
-        root.geometry("780x600")
-        root.resizable(False, False)
+        p = parent                # UI 全部构建在该容器上
 
         # 保存目录
-        frame = ttk.LabelFrame(root, text="保存目录")
+        frame = ttk.LabelFrame(p, text="保存目录")
         frame.pack(fill="x", padx=10, pady=6)
         self.choice = tk.IntVar(value=0)
         self.dirs = self.cfg.get("dirs", [])
@@ -95,13 +95,13 @@ class App:
         ttk.Entry(frame, textvariable=self.custom_path, width=95).pack(anchor="w", padx=24, pady=2)
 
         # 链接
-        frame2 = ttk.LabelFrame(root, text="视频链接")
+        frame2 = ttk.LabelFrame(p, text="视频链接")
         frame2.pack(fill="x", padx=10, pady=6)
         self.url_var = tk.StringVar()
         ttk.Entry(frame2, textvariable=self.url_var, width=100).pack(padx=8, pady=6)
 
         # 帧率转换
-        frame3 = ttk.LabelFrame(root, text="帧率转换（下载完成后自动执行，优先下载原版流）")
+        frame3 = ttk.LabelFrame(p, text="帧率转换（下载完成后自动执行，优先下载原版流）")
         frame3.pack(fill="x", padx=10, pady=6)
         self.fps_var = tk.StringVar(value=self.cfg.get("default_fps", "0"))
         ttk.Radiobutton(frame3, text="不转换", variable=self.fps_var,
@@ -112,7 +112,7 @@ class App:
                         value="24").pack(side="left", padx=10, pady=3)
 
         # 按钮
-        btns = ttk.Frame(root)
+        btns = ttk.Frame(p)
         btns.pack(fill="x", padx=10, pady=4)
         self.btn = ttk.Button(btns, text="下载", command=self.start_download)
         self.btn.pack(side="left", padx=5)
@@ -126,7 +126,7 @@ class App:
         self.status.pack(side="right", padx=5)
 
         # 日志
-        self.log = scrolledtext.ScrolledText(root, height=18, state="disabled")
+        self.log = scrolledtext.ScrolledText(p, height=18, state="disabled")
         self.log.pack(fill="both", expand=True, padx=10, pady=6)
 
         self.load_last()
@@ -411,14 +411,13 @@ class App:
         txt.configure(state="disabled")
 
 
-class Setup:
-    """首次运行环境引导页：检测 yt-dlp / ffmpeg，缺失则一键自动安装（免 Python 绿色版）"""
+class EnvPage:
+    """必需环境检测页：yt-dlp / ffmpeg 状态检测 + 一键安装（嵌入主窗口内容区）"""
 
     STATE_COLORS = {"ok": "#1a7f37", "miss": "#c62828", "busy": "#b26a00", "idle": "#888"}
 
-    def __init__(self, root, on_ready):
-        self.root = root
-        self.on_ready = on_ready
+    def __init__(self, root, parent):
+        self.root = root          # 主窗口 Tk：用于 after / messagebox
         self.cfg = load_config()
         self.info = envcheck.component_info()
         self.results = {}
@@ -427,17 +426,14 @@ class Setup:
         self.bar = {}
         self.installing = False
 
-        root.title("ytdlp4k - 环境准备")
-        root.geometry("780x580")
-        root.resizable(False, False)
-
-        pad = ttk.Frame(root, padding=28)
+        pad = ttk.Frame(parent, padding=24)
         pad.pack(fill="both", expand=True)
 
-        ttk.Label(pad, text="首次使用，先检查两个必要组件",
-                  font=("Microsoft YaHei", 16, "bold")).pack(anchor="w")
-        ttk.Label(pad, text="缺少的组件点“一键安装”即可自动下载配置，全程无需手动装软件、无需 Python。",
-                  foreground="#666").pack(anchor="w", pady=(4, 14))
+        ttk.Label(pad, text="必需环境检测",
+                  font=("Microsoft YaHei", 15, "bold")).pack(anchor="w")
+        ttk.Label(pad, text="ytdlp4k 需要 yt-dlp（下载内核）与 ffmpeg（音视频合并/转码）。"
+                            "缺失的组件点“一键安装缺失组件”即可自动下载配置，无需手动装软件、无需 Python。",
+                  foreground="#666", wraplength=700).pack(anchor="w", pady=(4, 12))
 
         for key in envcheck.COMPONENTS:
             self._build_row(pad, key)
@@ -446,19 +442,14 @@ class Setup:
         self.progress_bar = ttk.Progressbar(pad, mode="determinate", maximum=1000)
         self.progress_bar.pack(fill="x", pady=(16, 4))
         self.progress_var = tk.StringVar(value="")
-        self.progress_text = ttk.Label(pad, textvariable=self.progress_var, foreground="#555")
-        self.progress_text.pack(anchor="w")
+        ttk.Label(pad, textvariable=self.progress_var, foreground="#555").pack(anchor="w")
 
         # 按钮区
         btns = ttk.Frame(pad)
         btns.pack(fill="x", pady=(18, 0))
         self.install_btn = ttk.Button(btns, text="一键安装缺失组件", command=self.install_missing)
         self.install_btn.pack(side="left")
-        self.enter_btn = ttk.Button(btns, text="进入下载器", command=self.enter, state="disabled")
-        self.enter_btn.pack(side="left", padx=10)
         ttk.Button(btns, text="重新检测", command=self.refresh).pack(side="right")
-        ttk.Button(btns, text="跳过（缺少组件将无法下载）",
-                   command=self.skip).pack(side="right", padx=8)
 
         self.hint_var = tk.StringVar()
         ttk.Label(pad, textvariable=self.hint_var, foreground="#c55",
@@ -530,14 +521,12 @@ class Setup:
                 self.status_lbl[key].configure(foreground=self.STATE_COLORS["miss"])
         if missing:
             self.install_btn.configure(state="normal")
-            self.enter_btn.configure(state="disabled")
             self.hint_var.set("缺少: " + "、".join(self.info[k]["name"] for k in missing) +
                               "。点击“一键安装缺失组件”自动下载（首次约需 110 MB）。" +
-                              "若下载缓慢，可在 config.json 中配置 proxy 后点“重新检测”旁的按钮重试。")
+                              "若下载缓慢，可在 config.json 中配置 proxy 后点“重新检测”重试。")
         else:
             self.install_btn.configure(state="disabled")
-            self.enter_btn.configure(state="normal")
-            self.hint_var.set("环境就绪，点击“进入下载器”开始使用")
+            self.hint_var.set("环境就绪，可直接在“下载”页使用")
         self.progress_var.set("")
 
     # ---------- 一键安装 ----------
@@ -549,7 +538,6 @@ class Setup:
             return
         self.installing = True
         self.install_btn.configure(state="disabled")
-        self.enter_btn.configure(state="disabled")
         self.hint_var.set("")
         for key in missing:
             self.status_var[key].set("安装中...")
@@ -595,25 +583,68 @@ class Setup:
         else:
             self.install_btn.configure(state="normal")
 
-    # ---------- 进入 ----------
-    def enter(self):
-        for w in self.root.winfo_children():
-            w.destroy()
-        self.on_ready()
 
-    def skip(self):
-        if not messagebox.askyesno("确认跳过",
-                                   "缺少组件将无法下载/合并视频。确定仍要进入下载器吗？"):
-            return
-        self.enter()
+class MainWindow:
+    """主窗口：左侧导航栏（下载 / 必需环境检测）+ 右侧内容区"""
+
+    NAV = [("download", "下载"), ("env", "必需环境检测")]
+
+    def __init__(self, root):
+        self.root = root
+        root.title("ytdlp4k - YouTube 4K 视频下载器")
+        root.geometry("960x620")
+        root.resizable(False, False)
+
+        # ---------- 左侧导航栏 ----------
+        side_bg = "#eceff1"
+        self.side = tk.Frame(root, bg=side_bg, width=176)
+        self.side.pack(side="left", fill="y")
+        self.side.pack_propagate(False)
+
+        tk.Label(self.side, text="ytdlp4k", font=("Microsoft YaHei", 16, "bold"),
+                 bg=side_bg, fg="#333").pack(anchor="w", padx=18, pady=(20, 22))
+
+        self.nav_btns = {}
+        for key, text in self.NAV:
+            b = tk.Button(self.side, text=text, font=("Microsoft YaHei", 10),
+                          relief="flat", bd=0, anchor="w", padx=14, pady=9,
+                          bg=side_bg, fg="#333",
+                          activebackground="#d7dce0",
+                          command=lambda k=key: self.show(k))
+            b.pack(fill="x", padx=10, pady=3)
+            self.nav_btns[key] = b
+
+        # ---------- 右侧内容区 ----------
+        content = tk.Frame(root)
+        content.pack(side="left", fill="both", expand=True)
+        content.grid_rowconfigure(0, weight=1)
+        content.grid_columnconfigure(0, weight=1)
+
+        self.pages = {}
+        self.pages["download"] = self._make_page(content, App)
+        self.pages["env"] = self._make_page(content, EnvPage)
+        self.show("download")
+
+    def _make_page(self, content, page_cls):
+        f = tk.Frame(content)
+        f.grid(row=0, column=0, sticky="nsew")
+        page_cls(self.root, f)
+        return f
+
+    def show(self, key):
+        """切换右侧页面并高亮侧边栏当前项"""
+        self.pages[key].tkraise()
+        sel_bg = "#bcd6ee"
+        for k, b in self.nav_btns.items():
+            if k == key:
+                b.configure(bg=sel_bg, fg="#0d47a1")
+            else:
+                b.configure(bg="#eceff1", fg="#333")
 
 
 def main():
     root = tk.Tk()
-    # 每次启动都先展示环境引导页：
-    #   组件就绪 -> 按钮变为"进入下载器"；组件缺失 -> 提供"一键安装缺失组件"。
-    # 不自动跳过，让使用者（尤其是拿到绿色版的其他人）能看清环境状态。
-    Setup(root, on_ready=lambda: App(root))
+    MainWindow(root)
     root.mainloop()
 
 
