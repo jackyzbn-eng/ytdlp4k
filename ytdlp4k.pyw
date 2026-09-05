@@ -38,14 +38,23 @@ DEFAULT_CONFIG = {
     "cookies_browser": "firefox",      # 浏览器 Cookie 来源：firefox / chrome / edge / 留空禁用
     "lastdir_file": "~/.ytdlp4k_lastdir.txt",
     "default_fps": "0",                # 0=不转换 30=转30fps 24=转24fps
+    "quality": "4K",                   # 下载分辨率档位（见 QUALITY）
     "dirs": [
-        {"name": "1080P", "path": "", "fmt": "bv*[height<=1080]+ba/b[height<=1080]"},
-        {"name": "4K",    "path": "", "fmt": "bv*[height<=2160]+ba/b[height<=2160]"},
+        {"name": "1080P", "path": ""},
+        {"name": "4K",    "path": ""},
     ],
 }
 
-FMT_1080 = "bv*[height<=1080]+ba/b[height<=1080]"     # 下载 ≤1080P 的视频
-FMT_2160 = "bv*[height<=2160]+ba/b[height<=2160]"     # 下载 ≤4K 的视频
+# 下载分辨率档位：值是 yt-dlp 格式选择器，用"上限约束"实现自动降级——
+# 选了 4K 但视频最高只有 1080P 时，[height<=2160] 自动取可用最高流(1080P)；
+# “原画”不设上限，取该视频可读取的最高分辨率。
+QUALITY = {
+    "原画": "bv*+ba/b",
+    "4K":   "bv*[height<=2160]+ba/b[height<=2160]",
+    "1080P": "bv*[height<=1080]+ba/b[height<=1080]",
+    "720P": "bv*[height<=720]+ba/b[height<=720]",
+}
+QUALITY_ORDER = ["原画", "4K", "1080P", "720P"]
 
 
 def load_config():
@@ -61,13 +70,13 @@ def load_config():
             cfg = json.load(f)
         for k, v in DEFAULT_CONFIG.items():
             cfg.setdefault(k, v)
-        # 兼容旧版 dirs（label 字段 → name），并保证每个分类都有 name/fmt
+        # 兼容旧版 dirs（label 字段 → name），并保证每个分类都有 name/path
         for i, d in enumerate(cfg.get("dirs", [])):
             if "label" in d and "name" not in d:
                 d["name"] = d.pop("label")
             d.setdefault("name", "分类%d" % (i + 1))
-            d.setdefault("fmt", FMT_2160)
             d.setdefault("path", "")
+        # 兼容旧版：分类曾自带 fmt（画质选择已独立为 quality 档位，忽略旧 fmt）
         return cfg
     except Exception:
         return json.loads(json.dumps(DEFAULT_CONFIG))
@@ -101,6 +110,16 @@ class App:
         self.dir_box = ttk.Frame(self.dir_frame)
         self.dir_box.pack(fill="x", padx=2, pady=(0, 6))
         self._rebuild_dirs()
+
+        # 下载分辨率（全局档位，自动降级：所选档位高于视频实际最高时取可用最高）
+        qframe = ttk.LabelFrame(p, text="下载分辨率")
+        qframe.pack(fill="x", padx=10, pady=6)
+        self.quality_var = tk.StringVar(value=self.cfg.get("quality", "4K"))
+        for q in QUALITY_ORDER:
+            ttk.Radiobutton(qframe, text=q, variable=self.quality_var,
+                            value=q, command=self._on_quality).pack(side="left", padx=12, pady=4)
+        ttk.Label(qframe, text="选了比视频实际更高的档位时会自动下载可用的最高画质",
+                  foreground="#888").pack(side="left", padx=(16, 0))
 
         # 链接
         frame2 = ttk.LabelFrame(p, text="视频链接")
@@ -150,10 +169,7 @@ class App:
 
     # ---------- 分类（保存目录）管理 ----------
     def _rebuild_dirs(self):
-        """按 self.dirs 重建分类行：◉ [分类名][路径][浏览][✕] + 自定义路径行"""
-        prev_custom = ""
-        if hasattr(self, "custom_path"):
-            prev_custom = self.custom_path.get()
+        """按 self.dirs 重建分类行：◉ [分类名][路径][浏览][✕]"""
         for w in self.dir_box.winfo_children():
             w.destroy()
         self.dir_name_vars = []
@@ -173,19 +189,11 @@ class App:
                        command=lambda i=i: self._pick_dir(i)).pack(side="left", padx=4)
             ttk.Button(row, text="✕", width=2,
                        command=lambda i=i: self._del_dir(i)).pack(side="left")
-        # 自定义路径行（单选值是最后一个）
-        row = ttk.Frame(self.dir_box)
-        row.pack(fill="x", padx=4, pady=(2, 0))
-        ttk.Radiobutton(row, text="自定义路径", variable=self.choice,
-                        value=len(self.dirs)).pack(side="left")
-        self.custom_path = tk.StringVar(value=prev_custom)
-        ttk.Entry(row, textvariable=self.custom_path, width=44).pack(side="left", padx=(0, 6))
-        ttk.Button(row, text="浏览", width=5, command=self._pick_custom).pack(side="left")
-        # 单选值越界时收回到自定义路径
+        # 单选值越界时收回（删除分类导致）
         if self.choice.get() < 0:
             self.choice.set(0)
-        elif self.choice.get() > len(self.dirs):
-            self.choice.set(len(self.dirs))
+        elif self.choice.get() >= len(self.dirs):
+            self.choice.set(max(0, len(self.dirs) - 1))
 
     def _sync_dirs(self):
         """把界面编辑结果写回 self.dirs 并持久化"""
@@ -216,14 +224,8 @@ class App:
             self._sync_dirs()
             self.status.configure(text="分类“%s”目录: %s" % (name, path))
 
-    def _pick_custom(self):
-        path = filedialog.askdirectory(title="选择自定义下载文件夹")
-        if path:
-            self.custom_path.set(path)
-            self.choice.set(len(self.dirs))
-
     def _add_dir(self):
-        self.dirs.append({"name": "新分类", "path": "", "fmt": FMT_2160})
+        self.dirs.append({"name": "新分类", "path": ""})
         self.choice.set(len(self.dirs) - 1)
         self._rebuild_dirs()
         self._save_cfg()
@@ -238,21 +240,25 @@ class App:
         self._rebuild_dirs()
         self._save_cfg()
 
+    def _on_quality(self):
+        self.cfg["quality"] = self.quality_var.get()
+        self._save_cfg()
+
+    def get_fmt(self):
+        """按当前下载分辨率档位取格式选择器（档位是上限，视频不够高时自动取可用最高）"""
+        return QUALITY.get(self.quality_var.get(), QUALITY["4K"])
+
     def resolve_target(self):
         self._sync_dirs()   # 以界面当前值为准（防 name/path var 已改未落盘）
         c = self.choice.get()
         if 0 <= c < len(self.dirs):
             d = self.dirs[c]
             path = expand_path(d.get("path", ""))
-            fmt = d.get("fmt", FMT_2160)
             if not path:
                 raise ValueError("分类“%s”还没选下载文件夹，点它后面的“浏览”选一个"
                                  % (d.get("name") or "分类%d" % (c + 1)))
-            return path, fmt
-        p = self.custom_path.get().strip()
-        if not p:
-            raise ValueError("请选一个分类，或在“自定义路径”里填下载文件夹")
-        return p, FMT_2160
+            return path
+        raise ValueError("请先选一个分类")
 
     def append_log(self, text):
         def _ins():
@@ -349,7 +355,9 @@ class App:
             messagebox.showwarning("提示", "请粘贴视频链接")
             return
         try:
-            folder, fmt = self.resolve_target()
+            folder = self.resolve_target()
+            fmt = self.get_fmt()
+            self.append_log(">>> 分辨率档位: %s" % self.quality_var.get())
         except ValueError as e:
             messagebox.showwarning("提示", str(e))
             return
