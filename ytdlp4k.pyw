@@ -610,11 +610,10 @@ class Setup:
 
 def main():
     root = tk.Tk()
-    results = envcheck.check_all()
-    if all(st["ok"] for st in results.values()):
-        App(root)
-    else:
-        Setup(root, on_ready=lambda: App(root))
+    # 每次启动都先展示环境引导页：
+    #   组件就绪 -> 按钮变为"进入下载器"；组件缺失 -> 提供"一键安装缺失组件"。
+    # 不自动跳过，让使用者（尤其是拿到绿色版的其他人）能看清环境状态。
+    Setup(root, on_ready=lambda: App(root))
     root.mainloop()
 
 
