@@ -24,7 +24,7 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
-from tkinter import ttk, messagebox, scrolledtext
+from tkinter import ttk, messagebox, scrolledtext, filedialog
 
 import envcheck
 
@@ -39,10 +39,13 @@ DEFAULT_CONFIG = {
     "lastdir_file": "~/.ytdlp4k_lastdir.txt",
     "default_fps": "0",                # 0=不转换 30=转30fps 24=转24fps
     "dirs": [
-        {"label": "1080P", "path": "", "fmt": "bv*[height<=1080]+ba/b[height<=1080]"},
-        {"label": "4K",    "path": "", "fmt": "bv*[height<=2160]+ba/b[height<=2160]"},
+        {"name": "1080P", "path": "", "fmt": "bv*[height<=1080]+ba/b[height<=1080]"},
+        {"name": "4K",    "path": "", "fmt": "bv*[height<=2160]+ba/b[height<=2160]"},
     ],
 }
+
+FMT_1080 = "bv*[height<=1080]+ba/b[height<=1080]"     # 下载 ≤1080P 的视频
+FMT_2160 = "bv*[height<=2160]+ba/b[height<=2160]"     # 下载 ≤4K 的视频
 
 
 def load_config():
@@ -58,6 +61,13 @@ def load_config():
             cfg = json.load(f)
         for k, v in DEFAULT_CONFIG.items():
             cfg.setdefault(k, v)
+        # 兼容旧版 dirs（label 字段 → name），并保证每个分类都有 name/fmt
+        for i, d in enumerate(cfg.get("dirs", [])):
+            if "label" in d and "name" not in d:
+                d["name"] = d.pop("label")
+            d.setdefault("name", "分类%d" % (i + 1))
+            d.setdefault("fmt", FMT_2160)
+            d.setdefault("path", "")
         return cfg
     except Exception:
         return json.loads(json.dumps(DEFAULT_CONFIG))
@@ -78,21 +88,19 @@ class App:
         self.last_file = None
         p = parent                # UI 全部构建在该容器上
 
-        # 保存目录
-        frame = ttk.LabelFrame(p, text="保存目录")
-        frame.pack(fill="x", padx=10, pady=6)
-        self.choice = tk.IntVar(value=0)
+        # 保存目录（分类管理）
         self.dirs = self.cfg.get("dirs", [])
-        for i, d in enumerate(self.dirs):
-            label = d.get("label", "目录%d" % (i + 1))
-            path = d.get("path", "")
-            text = "[%d] %s  %s" % (i + 1, label, path if path else "(未配置，见 config.json)")
-            ttk.Radiobutton(frame, text=text, variable=self.choice,
-                            value=i).pack(anchor="w", padx=8, pady=2)
-        ttk.Radiobutton(frame, text="[%d] 自定义路径" % (len(self.dirs) + 1),
-                        variable=self.choice, value=len(self.dirs)).pack(anchor="w", padx=8, pady=2)
-        self.custom_path = tk.StringVar()
-        ttk.Entry(frame, textvariable=self.custom_path, width=95).pack(anchor="w", padx=24, pady=2)
+        self.dir_frame = ttk.LabelFrame(p, text="保存目录（分类）")
+        self.dir_frame.pack(fill="x", padx=10, pady=6)
+        self.choice = tk.IntVar(value=0)
+        head = ttk.Frame(self.dir_frame)
+        head.pack(fill="x", padx=6, pady=(6, 2))
+        ttk.Label(head, text="分类名可直接改，每个分类点“浏览”选一个下载文件夹",
+                  foreground="#888").pack(side="left")
+        ttk.Button(head, text="＋ 添加分类", command=self._add_dir).pack(side="right")
+        self.dir_box = ttk.Frame(self.dir_frame)
+        self.dir_box.pack(fill="x", padx=2, pady=(0, 6))
+        self._rebuild_dirs()
 
         # 链接
         frame2 = ttk.LabelFrame(p, text="视频链接")
@@ -140,18 +148,111 @@ class App:
             if last:
                 self.append_log("上次目录: %s" % last)
 
+    # ---------- 分类（保存目录）管理 ----------
+    def _rebuild_dirs(self):
+        """按 self.dirs 重建分类行：◉ [分类名][路径][浏览][✕] + 自定义路径行"""
+        prev_custom = ""
+        if hasattr(self, "custom_path"):
+            prev_custom = self.custom_path.get()
+        for w in self.dir_box.winfo_children():
+            w.destroy()
+        self.dir_name_vars = []
+        self.dir_path_vars = []
+        for i, d in enumerate(self.dirs):
+            row = ttk.Frame(self.dir_box)
+            row.pack(fill="x", padx=4, pady=1)
+            ttk.Radiobutton(row, variable=self.choice, value=i).pack(side="left")
+            nv = tk.StringVar(value=d.get("name", ""))
+            nv.trace_add("write", self._on_dir_edited)
+            self.dir_name_vars.append(nv)
+            ttk.Entry(row, textvariable=nv, width=13).pack(side="left", padx=(0, 6))
+            pv = tk.StringVar(value=d.get("path", ""))
+            self.dir_path_vars.append(pv)
+            ttk.Entry(row, textvariable=pv, width=44, state="readonly").pack(side="left")
+            ttk.Button(row, text="浏览", width=5,
+                       command=lambda i=i: self._pick_dir(i)).pack(side="left", padx=4)
+            ttk.Button(row, text="✕", width=2,
+                       command=lambda i=i: self._del_dir(i)).pack(side="left")
+        # 自定义路径行（单选值是最后一个）
+        row = ttk.Frame(self.dir_box)
+        row.pack(fill="x", padx=4, pady=(2, 0))
+        ttk.Radiobutton(row, text="自定义路径", variable=self.choice,
+                        value=len(self.dirs)).pack(side="left")
+        self.custom_path = tk.StringVar(value=prev_custom)
+        ttk.Entry(row, textvariable=self.custom_path, width=44).pack(side="left", padx=(0, 6))
+        ttk.Button(row, text="浏览", width=5, command=self._pick_custom).pack(side="left")
+        # 单选值越界时收回到自定义路径
+        if self.choice.get() < 0:
+            self.choice.set(0)
+        elif self.choice.get() > len(self.dirs):
+            self.choice.set(len(self.dirs))
+
+    def _sync_dirs(self):
+        """把界面编辑结果写回 self.dirs 并持久化"""
+        for i, d in enumerate(self.dirs):
+            if i < len(self.dir_name_vars):
+                nm = self.dir_name_vars[i].get().strip()
+                d["name"] = nm or ("分类%d" % (i + 1))
+            if i < len(self.dir_path_vars):
+                d["path"] = self.dir_path_vars[i].get()
+        self._save_cfg()
+
+    def _on_dir_edited(self, *_):
+        self._sync_dirs()
+
+    def _save_cfg(self):
+        try:
+            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+                json.dump(self.cfg, f, ensure_ascii=False, indent=2)
+        except OSError:
+            pass
+
+    def _pick_dir(self, i):
+        name = self.dir_name_vars[i].get().strip() or ("分类%d" % (i + 1))
+        path = filedialog.askdirectory(title="选择“%s”的下载文件夹" % name)
+        if path:
+            self.dir_path_vars[i].set(path)
+            self.choice.set(i)
+            self._sync_dirs()
+            self.status.configure(text="分类“%s”目录: %s" % (name, path))
+
+    def _pick_custom(self):
+        path = filedialog.askdirectory(title="选择自定义下载文件夹")
+        if path:
+            self.custom_path.set(path)
+            self.choice.set(len(self.dirs))
+
+    def _add_dir(self):
+        self.dirs.append({"name": "新分类", "path": "", "fmt": FMT_2160})
+        self.choice.set(len(self.dirs) - 1)
+        self._rebuild_dirs()
+        self._save_cfg()
+
+    def _del_dir(self, i):
+        if len(self.dirs) <= 1:
+            messagebox.showinfo("提示", "至少保留一个分类")
+            return
+        del self.dirs[i]
+        if self.choice.get() >= len(self.dirs):
+            self.choice.set(max(0, len(self.dirs) - 1))
+        self._rebuild_dirs()
+        self._save_cfg()
+
     def resolve_target(self):
+        self._sync_dirs()   # 以界面当前值为准（防 name/path var 已改未落盘）
         c = self.choice.get()
         if 0 <= c < len(self.dirs):
-            path = expand_path(self.dirs[c].get("path", ""))
-            fmt = self.dirs[c].get("fmt", "bv*[height<=2160]+ba/b[height<=2160]")
+            d = self.dirs[c]
+            path = expand_path(d.get("path", ""))
+            fmt = d.get("fmt", FMT_2160)
             if not path:
-                raise ValueError("目录 %d 未配置路径，请编辑 config.json" % (c + 1))
+                raise ValueError("分类“%s”还没选下载文件夹，点它后面的“浏览”选一个"
+                                 % (d.get("name") or "分类%d" % (c + 1)))
             return path, fmt
         p = self.custom_path.get().strip()
         if not p:
-            raise ValueError("请选择目录或输入自定义路径")
-        return p, "bv*[height<=2160]+ba/b[height<=2160]"
+            raise ValueError("请选一个分类，或在“自定义路径”里填下载文件夹")
+        return p, FMT_2160
 
     def append_log(self, text):
         def _ins():
@@ -628,12 +729,13 @@ class MainWindow:
     def _make_page(self, content, page_cls):
         f = tk.Frame(content)
         f.grid(row=0, column=0, sticky="nsew")
-        page_cls(self.root, f)
-        return f
+        inst = page_cls(self.root, f)
+        inst.frame = f
+        return inst
 
     def show(self, key):
         """切换右侧页面并高亮侧边栏当前项"""
-        self.pages[key].tkraise()
+        self.pages[key].frame.tkraise()
         sel_bg = "#bcd6ee"
         for k, b in self.nav_btns.items():
             if k == key:
