@@ -19,14 +19,19 @@ ytdlp4k - YouTube 4K 视频下载器（tkinter GUI）
 """
 import json
 import os
+import queue
 import subprocess
 import sys
 import threading
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
 
+import envcheck
+
 APP_NAME = "ytdlp4k"
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+# exe/pyw 所在目录（打包后 = exe 目录，config/tools 持久化在这里，而非 _MEIPASS）
+APP_DIR = envcheck.app_dir()
+CONFIG_PATH = os.path.join(APP_DIR, "config.json")
 
 DEFAULT_CONFIG = {
     "proxy": "",                       # 代理，如 "http://127.0.0.1:7897"，留空 = 不走代理
@@ -158,16 +163,7 @@ class App:
 
     @staticmethod
     def find_tool(name):
-        import shutil
-        p = shutil.which(name)
-        if p:
-            return p
-        for base in (r"C:\Program Files\ffmpeg\bin", r"D:\ffmpeg\bin", r"C:\ffmpeg\bin",
-                     "/usr/bin", "/usr/local/bin"):
-            cand = os.path.join(base, name + (".exe" if os.name == "nt" else ""))
-            if os.path.isfile(cand):
-                return cand
-        return None
+        return envcheck.find_tool(name)
 
     def has_nvenc(self):
         """检测 ffmpeg 是否支持 NVIDIA NVENC"""
@@ -284,6 +280,16 @@ class App:
                "-o", template,
                "-f", fmt_arg,
                "--merge-output-format", "mkv"]
+        # 下载内核：优先独立版 yt-dlp.exe（免 Python，别人拿到就能用），
+        # 验证可运行才切换；否则回退 python -m yt_dlp
+        ytdlp_exe = envcheck.find_tool("yt-dlp")
+        if ytdlp_exe and envcheck.tool_version(ytdlp_exe):
+            cmd = [ytdlp_exe, "-o", template, "-f", fmt_arg,
+                   "--merge-output-format", "mkv"]
+            ffmpeg_exe = envcheck.find_tool("ffmpeg")
+            if ffmpeg_exe:
+                cmd += ["--ffmpeg-location", os.path.dirname(ffmpeg_exe)]
+            self.append_log(">>> 内核: %s" % ytdlp_exe)
         proxy = self.cfg.get("proxy", "")
         if proxy:
             cmd += ["--proxy", proxy]
@@ -405,9 +411,210 @@ class App:
         txt.configure(state="disabled")
 
 
+class Setup:
+    """首次运行环境引导页：检测 yt-dlp / ffmpeg，缺失则一键自动安装（免 Python 绿色版）"""
+
+    STATE_COLORS = {"ok": "#1a7f37", "miss": "#c62828", "busy": "#b26a00", "idle": "#888"}
+
+    def __init__(self, root, on_ready):
+        self.root = root
+        self.on_ready = on_ready
+        self.cfg = load_config()
+        self.info = envcheck.component_info()
+        self.results = {}
+        self.status_var = {}
+        self.status_lbl = {}
+        self.bar = {}
+        self.installing = False
+
+        root.title("ytdlp4k - 环境准备")
+        root.geometry("780x580")
+        root.resizable(False, False)
+
+        pad = ttk.Frame(root, padding=28)
+        pad.pack(fill="both", expand=True)
+
+        ttk.Label(pad, text="首次使用，先检查两个必要组件",
+                  font=("Microsoft YaHei", 16, "bold")).pack(anchor="w")
+        ttk.Label(pad, text="缺少的组件点“一键安装”即可自动下载配置，全程无需手动装软件、无需 Python。",
+                  foreground="#666").pack(anchor="w", pady=(4, 14))
+
+        for key in envcheck.COMPONENTS:
+            self._build_row(pad, key)
+
+        # 进度区
+        self.progress_bar = ttk.Progressbar(pad, mode="determinate", maximum=1000)
+        self.progress_bar.pack(fill="x", pady=(16, 4))
+        self.progress_var = tk.StringVar(value="")
+        self.progress_text = ttk.Label(pad, textvariable=self.progress_var, foreground="#555")
+        self.progress_text.pack(anchor="w")
+
+        # 按钮区
+        btns = ttk.Frame(pad)
+        btns.pack(fill="x", pady=(18, 0))
+        self.install_btn = ttk.Button(btns, text="一键安装缺失组件", command=self.install_missing)
+        self.install_btn.pack(side="left")
+        self.enter_btn = ttk.Button(btns, text="进入下载器", command=self.enter, state="disabled")
+        self.enter_btn.pack(side="left", padx=10)
+        ttk.Button(btns, text="重新检测", command=self.refresh).pack(side="right")
+        ttk.Button(btns, text="跳过（缺少组件将无法下载）",
+                   command=self.skip).pack(side="right", padx=8)
+
+        self.hint_var = tk.StringVar()
+        ttk.Label(pad, textvariable=self.hint_var, foreground="#c55",
+                  wraplength=700).pack(anchor="w", pady=(10, 0))
+
+        # 后台线程 → 主线程消息队列（避免跨线程直接调 tkinter）
+        self._q = queue.Queue()
+        self._pump()
+
+        self.refresh()
+
+    def _post(self, fn):
+        """后台线程安全地向主线程投递回调"""
+        self._q.put(fn)
+
+    def _pump(self):
+        try:
+            while True:
+                fn = self._q.get_nowait()
+                try:
+                    fn()
+                except Exception:
+                    pass
+        except queue.Empty:
+            pass
+        self.root.after(100, self._pump)
+
+    # ---------- UI 构建 ----------
+    def _build_row(self, parent, key):
+        info = self.info[key]
+        card = ttk.Frame(parent, padding=(12, 10), relief="groove")
+        card.pack(fill="x", pady=6)
+        head = ttk.Frame(card)
+        head.pack(fill="x")
+        ttk.Label(head, text=info["name"], font=("Microsoft YaHei", 11, "bold")).pack(side="left")
+        sv = tk.StringVar(value="检测中...")
+        st = ttk.Label(head, textvariable=sv, foreground=self.STATE_COLORS["idle"])
+        st.pack(side="right")
+        self.status_var[key] = sv
+        self.status_lbl[key] = st
+        ttk.Label(card, text=info["desc"], foreground="#888").pack(anchor="w", pady=(2, 0))
+        bar = ttk.Progressbar(card, mode="determinate", maximum=1000)
+        self.bar[key] = bar
+
+    # ---------- 检测 ----------
+    def refresh(self):
+        self.installing = False
+        for key in self.status_var:
+            self.status_var[key].set("检测中...")
+            self.status_lbl[key].configure(foreground=self.STATE_COLORS["idle"])
+        self.progress_bar["value"] = 0
+        self.progress_var.set("正在检测本机环境...")
+        threading.Thread(target=self._detect_worker, daemon=True).start()
+
+    def _detect_worker(self):
+        results = envcheck.check_all()
+        self._post(lambda: self._apply_results(results))
+
+    def _apply_results(self, results):
+        self.results = results
+        missing = [k for k, st in results.items() if not st["ok"]]
+        for key, st in results.items():
+            sv = self.status_var[key]
+            if st["ok"]:
+                sv.set("就绪 · %s" % st["version"])
+                self.status_lbl[key].configure(foreground=self.STATE_COLORS["ok"])
+            else:
+                sv.set("未安装")
+                self.status_lbl[key].configure(foreground=self.STATE_COLORS["miss"])
+        if missing:
+            self.install_btn.configure(state="normal")
+            self.enter_btn.configure(state="disabled")
+            self.hint_var.set("缺少: " + "、".join(self.info[k]["name"] for k in missing) +
+                              "。点击“一键安装缺失组件”自动下载（首次约需 110 MB）。" +
+                              "若下载缓慢，可在 config.json 中配置 proxy 后点“重新检测”旁的按钮重试。")
+        else:
+            self.install_btn.configure(state="disabled")
+            self.enter_btn.configure(state="normal")
+            self.hint_var.set("环境就绪，点击“进入下载器”开始使用")
+        self.progress_var.set("")
+
+    # ---------- 一键安装 ----------
+    def install_missing(self):
+        if self.installing:
+            return
+        missing = [k for k, st in self.results.items() if not st["ok"]]
+        if not missing:
+            return
+        self.installing = True
+        self.install_btn.configure(state="disabled")
+        self.enter_btn.configure(state="disabled")
+        self.hint_var.set("")
+        for key in missing:
+            self.status_var[key].set("安装中...")
+            self.status_lbl[key].configure(foreground=self.STATE_COLORS["busy"])
+            self.bar[key].pack(fill="x", pady=(8, 0))
+        threading.Thread(target=self._install_worker, args=(missing,), daemon=True).start()
+
+    def _install_worker(self, missing):
+        proxy = self.cfg.get("proxy", "") or None
+        ok_all = True
+        for key in envcheck.COMPONENTS:
+            if key not in missing:
+                continue
+            name = self.info[key]["name"]
+
+            def _mark(text, frac, key=key, name=name):
+                def _up():
+                    if frac is None:
+                        self.bar[key]["value"] = 0
+                    else:
+                        self.bar[key]["value"] = int(frac * 1000)
+                    self.progress_var.set("%s: %s" % (name, text))
+                self._post(_up)
+
+            ok, msg = envcheck.install_component(
+                key, proxy=proxy,
+                progress=lambda t, f, key=key: _mark(t, f, key))
+            if not ok:
+                ok_all = False
+                def _fail(key=key, msg=msg):
+                    self.status_var[key].set("安装失败")
+                    self.status_lbl[key].configure(foreground=self.STATE_COLORS["miss"])
+                    self.hint_var.set(msg)
+                self._post(_fail)
+                break
+        self._post(lambda: self._install_finished(ok_all))
+
+    def _install_finished(self, ok_all):
+        self.installing = False
+        if ok_all:
+            self.progress_var.set("全部安装完成，正在确认...")
+            self.refresh()
+        else:
+            self.install_btn.configure(state="normal")
+
+    # ---------- 进入 ----------
+    def enter(self):
+        for w in self.root.winfo_children():
+            w.destroy()
+        self.on_ready()
+
+    def skip(self):
+        if not messagebox.askyesno("确认跳过",
+                                   "缺少组件将无法下载/合并视频。确定仍要进入下载器吗？"):
+            return
+        self.enter()
+
+
 def main():
     root = tk.Tk()
-    App(root)
+    results = envcheck.check_all()
+    if all(st["ok"] for st in results.values()):
+        App(root)
+    else:
+        Setup(root, on_ready=lambda: App(root))
     root.mainloop()
 
 

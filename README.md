@@ -4,6 +4,8 @@ YouTube 视频下载器（tkinter GUI），专注高质量下载：4K / 1080P、
 
 基于 [yt-dlp](https://github.com/yt-dlp/yt-dlp) 内核，提供图形界面、一键下载、播放、属性查看、帧率转换。
 
+**免 Python、绿色分发**：内置环境自动检测与一键安装，拿到手双击即用，适合直接发给别人。
+
 ## 功能
 
 - 🎬 **多清晰度一键下载**：预设目录 + 清晰度组合（1080P / 4K / 自定义），保存路径可配置
@@ -13,15 +15,23 @@ YouTube 视频下载器（tkinter GUI），专注高质量下载：4K / 1080P、
 - 🚀 **GPU 优先转码**：检测到 NVIDIA NVENC 用硬件编码（快 5-10 倍），无 GPU 自动回退 CPU
 - 📜 **实时进度日志**：下载 / 转码进度实时滚动
 - 🌍 **代理支持**：可配置 HTTP 代理（走代理下载时需配合 Clash 等）
+- 🧩 **环境自检引导页**：首次运行自动检测 yt-dlp / ffmpeg，缺失时点“一键安装”自动下载配置，全程免手动装软件
 
 ## 安装
 
+**绿色版（推荐，发给别人也能用）**：整个文件夹拷走即可，无需安装任何东西。
+
+- 首次运行自动检测两个组件，缺失时点“一键安装”自动下载：
+  - **yt-dlp**（下载内核，官方独立版）→ 存到 `tools/yt-dlp.exe`
+  - **ffmpeg**（合并/转码，官方构建）→ 存到 `tools/ffmpeg/bin/`
+- 也可手动下载放好（跳过引导）：
+  - yt-dlp: <https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe> → `tools/`
+  - ffmpeg: <https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip> → 解压后取 `bin/ffmpeg.exe`、`bin/ffprobe.exe` 放 `tools/ffmpeg/bin/`
+
+**源码运行**（开发）：需要 Python 3.9+，可选 `pip install yt-dlp`（下载内核会优先用独立版，无需 pip 安装也可运行）：
+
 ```bash
-# 1. 安装 Python 3.9+（Windows 官方包自带 tkinter）
-# 2. 安装 yt-dlp
-pip install -U yt-dlp
-# 3. 安装 ffmpeg（转码/属性查看需要），加入 PATH
-#    Windows: https://www.gyan.dev/ffmpeg/builds/ 下载 essentials 版解压并加入 PATH
+python ytdlp4k.pyw
 ```
 
 ## 使用
@@ -63,13 +73,13 @@ python -m PyInstaller --onefile --noconsole --name ytdlp4k ytdlp4k.pyw
 
 产物在 `dist/ytdlp4k.exe`。也可直接双击 `build.bat`。
 
-> 注意：打包版是 GUI 外壳，下载内核仍调用 `python -m yt_dlp`，**目标电脑需安装 Python + yt-dlp + ffmpeg** 才能使用。如需完全独立免 Python 的 exe，可参考 yt-dlp 的 PyInstaller 集成方案自行扩展。
+> 打包版 = 图形外壳 + 内置下载内核。首次运行同样会自动检测/一键安装 yt-dlp 与 ffmpeg 到 exe 同目录 `tools/`，**无需目标电脑安装 Python**。分发给别人时整个文件夹（exe + tools）拷走即可，或只发 exe（首次运行自动下载组件）。
 
-## 依赖
+## 依赖（运行时自动准备，也可手动预置）
 
-- Python 3.9+
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp)（下载内核，建议保持最新）
-- ffmpeg / ffprobe（转码、属性查看；下载本身也建议安装用于合并音视频流）
+- **yt-dlp**（下载内核，官方独立版）→ `tools/yt-dlp.exe`
+- **ffmpeg / ffprobe**（合并、转码、属性）→ `tools/ffmpeg/bin/`
+- 开发/源码运行时才需要 Python 3.9+ 与 `pip install yt-dlp`（可选）
 
 ## 常见问题
 
