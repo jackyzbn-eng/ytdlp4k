@@ -163,6 +163,55 @@ def find_js_runtime():
     return None
 
 
+def get_system_proxy():
+    """读取 Windows 系统代理设置（HKCU\\...\\Internet Settings）。
+
+    说明：yt-dlp 自身就会通过 urllib 读取注册表里的系统代理，所以"跟随系统"
+    模式下无需显式传参。这里读出来是为了让界面能明确展示当前生效的代理，
+    避免用户以为"没设置代理就不会走代理"。
+
+    返回 (proxy_url 或 None, 状态说明文本)
+    """
+    if os.name != "nt":
+        return None, "非 Windows 系统"
+    try:
+        import winreg
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Internet Settings")
+        try:
+            acu, _ = winreg.QueryValueEx(key, "AutoConfigURL")
+        except FileNotFoundError:
+            acu = ""
+        if acu:
+            return None, "系统使用 PAC 自动配置（%s）" % acu
+        try:
+            enable, _ = winreg.QueryValueEx(key, "ProxyEnable")
+        except FileNotFoundError:
+            enable = 0
+        if not enable:
+            return None, "系统代理未启用"
+        try:
+            server, _ = winreg.QueryValueEx(key, "ProxyServer")
+        except FileNotFoundError:
+            return None, "系统代理未启用"
+        if not server:
+            return None, "系统代理未启用"
+        url = None
+        if "=" in server:
+            parts = dict(p.split("=", 1) for p in server.split(";") if "=" in p)
+            url = parts.get("https") or parts.get("http") or parts.get("socks")
+        else:
+            url = server
+        if not url:
+            return None, "无法解析系统代理：%s" % server
+        if "://" not in url:
+            url = "http://" + url
+        return url, "跟随系统代理：%s" % url
+    except Exception as e:
+        return None, "读取系统代理失败：%s" % e
+
+
 def find_firefox_profile():
     """返回最近使用的、含 cookies.sqlite 的 Firefox profile 目录。
 

@@ -69,7 +69,8 @@ def _config_path():
 CONFIG_PATH = _config_path()
 
 DEFAULT_CONFIG = {
-    "proxy": "",                       # 代理，如 "http://127.0.0.1:7897"，留空 = 不走代理
+    "proxy_mode": "system",            # 代理模式：system=跟随系统代理 / manual=手动指定 / direct=直连
+    "proxy": "",                       # 手动模式下的代理地址，如 "http://127.0.0.1:7897"
     "cookies_browser": "firefox",      # 浏览器 Cookie 来源：firefox / chrome / edge / 留空禁用
     "lastdir_file": "~/.ytdlp4k_lastdir.txt",
     "default_fps": "0",                # 0=不转换 30=转30fps 24=转24fps
@@ -162,14 +163,24 @@ class App:
         self.url_var = tk.StringVar()
         ttk.Entry(frame2, textvariable=self.url_var, width=100).pack(padx=8, pady=6)
 
-        # 代理：国内访问 YouTube 必须走代理（yt-dlp 不读系统代理设置，要显式传）
+        # 代理：默认跟随 Windows 系统代理（yt-dlp 原生支持读注册表里的系统代理设置），
+        # 也可手动指定，或强制直连。
         prow = ttk.Frame(frame2)
         prow.pack(fill="x", padx=8, pady=(0, 6))
         ttk.Label(prow, text="网络代理:").pack(side="left")
+        if "proxy_mode" not in self.cfg:
+            # 兼容旧配置：原来填了地址的视为手动模式
+            self.cfg["proxy_mode"] = "manual" if self.cfg.get("proxy") else "system"
+        self.proxy_mode = tk.StringVar(value=self.cfg.get("proxy_mode", "system"))
+        for _val, _txt in (("system", "跟随系统代理"), ("manual", "手动指定"), ("direct", "直连")):
+            ttk.Radiobutton(prow, text=_txt, variable=self.proxy_mode,
+                            value=_val, command=self._on_proxy_mode).pack(side="left", padx=(7, 0))
         self.proxy_var = tk.StringVar(value=self.cfg.get("proxy", ""))
-        ttk.Entry(prow, textvariable=self.proxy_var, width=30).pack(side="left", padx=(4, 8))
-        ttk.Label(prow, text="国内需填，如 http://127.0.0.1:7897（Clash 默认端口）；留空=直连",
-                  foreground="#888").pack(side="left")
+        self.proxy_entry = ttk.Entry(prow, textvariable=self.proxy_var, width=24)
+        self.proxy_entry.pack(side="left", padx=(9, 6))
+        self.proxy_hint = ttk.Label(prow, text="", foreground="#888")
+        self.proxy_hint.pack(side="left")
+        self._update_proxy_ui()
 
         # 帧率转换
         frame3 = ttk.LabelFrame(p, text="帧率转换（下载完成后自动执行，优先下载原版流）")
@@ -288,6 +299,25 @@ class App:
         self.cfg["quality"] = self.quality_var.get()
         self._save_cfg()
 
+    def _on_proxy_mode(self):
+        self.cfg["proxy_mode"] = self.proxy_mode.get()
+        self._save_cfg()
+        self._update_proxy_ui()
+
+    def _update_proxy_ui(self):
+        """按代理模式启用/禁用输入框，并展示系统代理的实际状态"""
+        mode = self.proxy_mode.get()
+        if mode == "manual":
+            self.proxy_entry.configure(state="normal")
+            self.proxy_hint.configure(text="例：http://127.0.0.1:7897")
+        elif mode == "system":
+            self.proxy_entry.configure(state="disabled")
+            _url, msg = envcheck.get_system_proxy()
+            self.proxy_hint.configure(text="→ " + msg)
+        else:
+            self.proxy_entry.configure(state="disabled")
+            self.proxy_hint.configure(text="→ 不使用任何代理")
+
     def get_fmt(self):
         """按当前下载分辨率档位取格式选择器（档位是上限，视频不够高时自动取可用最高）"""
         return QUALITY.get(self.quality_var.get(), QUALITY["4K"])
@@ -398,7 +428,8 @@ class App:
         if not url:
             messagebox.showwarning("提示", "请粘贴视频链接")
             return
-        # 代理即时落盘，下次启动保留
+        # 代理设置即时落盘，下次启动保留
+        self.cfg["proxy_mode"] = self.proxy_mode.get()
         self.cfg["proxy"] = self.proxy_var.get().strip()
         self._save_cfg()
         try:
@@ -464,10 +495,24 @@ class App:
             self.append_log(">>> 警告：未检测到 deno/node，YouTube 可能报"
                             "「n challenge solving failed」，请到环境检测页安装 deno")
 
-        proxy = self.cfg.get("proxy", "")
-        if proxy:
-            cmd += ["--proxy", proxy]
-            self.append_log(">>> 代理: %s" % proxy)
+        # 代理：
+        #   system —— 不传参，yt-dlp 自动读取 Windows 系统代理（IE 设置）
+        #   manual —— 显式传用户填的地址
+        #   direct —— 传空串，强制直连（即使系统开了代理）
+        proxy_mode = self.cfg.get("proxy_mode", "system")
+        if proxy_mode == "manual":
+            proxy = self.cfg.get("proxy", "").strip()
+            if proxy:
+                cmd += ["--proxy", proxy]
+                self.append_log(">>> 代理: 手动指定 %s" % proxy)
+            else:
+                self.append_log(">>> 代理: 手动模式但未填地址，按直连处理")
+        elif proxy_mode == "system":
+            _url, msg = envcheck.get_system_proxy()
+            self.append_log(">>> 代理: %s" % msg)
+        else:
+            cmd += ["--proxy", ""]
+            self.append_log(">>> 代理: 直连（已禁用系统代理）")
 
         cookies = self.cfg.get("cookies_browser", "")
         if cookies:
@@ -735,7 +780,13 @@ class EnvPage:
         threading.Thread(target=self._install_worker, args=(missing,), daemon=True).start()
 
     def _install_worker(self, missing):
-        proxy = self.cfg.get("proxy", "") or None
+        # 安装组件走 urllib：system 模式交给 urllib 自动读系统代理，
+        # manual 模式用用户填的地址
+        _mode = self.cfg.get("proxy_mode", "system")
+        if _mode == "manual":
+            proxy = self.cfg.get("proxy", "").strip() or None
+        else:
+            proxy = None
         ok_all = True
         for key in envcheck.COMPONENTS:
             if key not in missing:

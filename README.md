@@ -15,7 +15,7 @@ YouTube 视频下载器（tkinter GUI），专注高质量下载：原画 / 4K /
 - ⏱️ **智能帧率**：选 30/24fps 时**优先下载 YouTube 原版流**（零损失）；没有对应帧率原版时自动用 ffmpeg 转码兜底
 - 🚀 **GPU 优先转码**：检测到 NVIDIA NVENC 用硬件编码（快 5-10 倍），无 GPU 自动回退 CPU
 - 📜 **实时进度日志**：下载 / 转码进度实时滚动
-- 🌍 **代理支持**：下载页直接填代理地址，即时保存（国内访问 YouTube 必填）
+- 🌍 **代理**：默认**跟随 Windows 系统代理**（Clash Verge / v2ray 等开着系统代理就行，不用手填）；也可切换成手动指定地址或强制直连
 - 🧩 **环境自检页**：侧边栏「必需环境检测」逐项检测 yt-dlp / ffmpeg / deno，缺失点「一键安装」自动下载配置，全程免手动装软件
 
 ## 安装
@@ -70,7 +70,8 @@ python ytdlp4k.pyw
 
 ```json
 {
-  "proxy": "http://127.0.0.1:7897",
+  "proxy_mode": "system",
+  "proxy": "",
   "cookies_browser": "firefox",
   "lastdir_file": "~/.ytdlp4k_lastdir.txt",
   "default_fps": "0",
@@ -84,7 +85,8 @@ python ytdlp4k.pyw
 
 | 配置项 | 说明 |
 |--------|------|
-| `proxy` | HTTP 代理地址（如 `http://127.0.0.1:7897`），留空 = 直连。**国内必填**，yt-dlp 不读系统代理 |
+| `proxy_mode` | 代理模式：`system` 跟随 Windows 系统代理（默认）/ `manual` 手动指定 / `direct` 强制直连 |
+| `proxy` | 仅 `manual` 模式使用，代理地址如 `http://127.0.0.1:7897` |
 | `cookies_browser` | 读取登录态的浏览器（`firefox` / `chrome` / `edge`），留空禁用。**下载会员/年龄限制视频需要** |
 | `quality` | 分辨率档位：`原画` / `4K` / `1080P` / `720P` |
 | `dirs` | 保存分类：`name` 分类名，`path` 保存路径 |
