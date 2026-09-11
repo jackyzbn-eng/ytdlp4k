@@ -127,6 +127,15 @@ class App:
         self.url_var = tk.StringVar()
         ttk.Entry(frame2, textvariable=self.url_var, width=100).pack(padx=8, pady=6)
 
+        # 代理：国内访问 YouTube 必须走代理（yt-dlp 不读系统代理设置，要显式传）
+        prow = ttk.Frame(frame2)
+        prow.pack(fill="x", padx=8, pady=(0, 6))
+        ttk.Label(prow, text="网络代理:").pack(side="left")
+        self.proxy_var = tk.StringVar(value=self.cfg.get("proxy", ""))
+        ttk.Entry(prow, textvariable=self.proxy_var, width=30).pack(side="left", padx=(4, 8))
+        ttk.Label(prow, text="国内需填，如 http://127.0.0.1:7897（Clash 默认端口）；留空=直连",
+                  foreground="#888").pack(side="left")
+
         # 帧率转换
         frame3 = ttk.LabelFrame(p, text="帧率转换（下载完成后自动执行，优先下载原版流）")
         frame3.pack(fill="x", padx=10, pady=6)
@@ -354,6 +363,9 @@ class App:
         if not url:
             messagebox.showwarning("提示", "请粘贴视频链接")
             return
+        # 代理即时落盘，下次启动保留
+        self.cfg["proxy"] = self.proxy_var.get().strip()
+        self._save_cfg()
         try:
             folder = self.resolve_target()
             fmt = self.get_fmt()
@@ -385,26 +397,58 @@ class App:
                 fmt_arg = "%s[fps<=%s]+%s[fps<=%s]/%s" % (bv_part, fps, ba_part, fps, fmt)
             self.append_log(">>> 帧率模式: 优先下载 %sfps 原版流，无则转码兜底" % fps)
 
-        cmd = [sys.executable, "-u", "-m", "yt_dlp",
-               "-o", template,
-               "-f", fmt_arg,
-               "--merge-output-format", "mkv"]
-        # 下载内核：优先独立版 yt-dlp.exe（免 Python，别人拿到就能用），
-        # 验证可运行才切换；否则回退 python -m yt_dlp
-        ytdlp_exe = envcheck.find_tool("yt-dlp")
-        if ytdlp_exe and envcheck.tool_version(ytdlp_exe):
-            cmd = [ytdlp_exe, "-o", template, "-f", fmt_arg,
-                   "--merge-output-format", "mkv"]
-            ffmpeg_exe = envcheck.find_tool("ffmpeg")
-            if ffmpeg_exe:
-                cmd += ["--ffmpeg-location", os.path.dirname(ffmpeg_exe)]
-            self.append_log(">>> 内核: %s" % ytdlp_exe)
+        # 下载内核：只用自带 tools/ 的官方独立版。
+        # pip 安装的 yt-dlp 不含 yt-dlp-ejs 反爬脚本且版本滞后，会导致
+        # YouTube 报 "n challenge solving failed / The page needs to be reloaded"，
+        # 所以绝不回退到 PATH 上的其它 yt-dlp。
+        ytdlp_exe = envcheck.find_ytdlp_kernel()
+        if not ytdlp_exe:
+            self.append_log(">>> 错误：未找到下载内核 tools/yt-dlp.exe")
+            self.append_log(">>> 请切换到左侧「必需环境检测」页，点「一键安装缺失组件」")
+            self.status.configure(text="缺少内核")
+            self.btn.configure(state="normal")
+            self.root.after(0, lambda: messagebox.showwarning(
+                "缺少下载内核",
+                "未找到 tools/yt-dlp.exe。\n请到左侧「必需环境检测」页点「一键安装缺失组件」。"))
+            return
+
+        cmd = [ytdlp_exe, "-o", template, "-f", fmt_arg,
+               "--merge-output-format", "mkv", "--no-update"]
+        ffmpeg_exe = envcheck.find_tool("ffmpeg")
+        if ffmpeg_exe:
+            cmd += ["--ffmpeg-location", os.path.dirname(ffmpeg_exe)]
+        self.append_log(">>> 内核: %s" % ytdlp_exe)
+
+        # JS 运行时：YouTube 现在强制要求解 n challenge（YouTube 2025 起）
+        rt = envcheck.find_js_runtime()
+        if rt:
+            rt_name, rt_exe = rt
+            cmd += ["--js-runtimes", "%s:%s" % (rt_name, rt_exe)]
+            self.append_log(">>> JS 运行时: %s (%s)" % (rt_name, rt_exe))
+        else:
+            self.append_log(">>> 警告：未检测到 deno/node，YouTube 可能报"
+                            "「n challenge solving failed」，请到环境检测页安装 deno")
+
         proxy = self.cfg.get("proxy", "")
         if proxy:
             cmd += ["--proxy", proxy]
+            self.append_log(">>> 代理: %s" % proxy)
+
         cookies = self.cfg.get("cookies_browser", "")
         if cookies:
-            cmd += ["--cookies-from-browser", cookies]
+            if cookies == "firefox":
+                # 主动挑 cookie 库最新的 profile：profiles.ini 里的 Default 可能指向空 profile
+                prof = envcheck.find_firefox_profile()
+                if prof:
+                    cmd += ["--cookies-from-browser", "firefox:%s" % prof]
+                    self.append_log(">>> Cookies: firefox profile %s" % os.path.basename(prof))
+                else:
+                    self.append_log(">>> 警告：未找到含 cookies.sqlite 的 Firefox profile，跳过 cookies")
+            elif cookies == "chrome" or cookies == "edge":
+                cmd += ["--cookies-from-browser", cookies]
+                self.append_log(">>> Cookies: %s（浏览器需完全退出，否则可能读取失败）" % cookies)
+            else:
+                cmd += ["--cookies-from-browser", cookies]
         cmd.append(url)
 
         self.append_log(">>> 开始下载: %s" % url)
@@ -521,7 +565,7 @@ class App:
 
 
 class EnvPage:
-    """必需环境检测页：yt-dlp / ffmpeg 状态检测 + 一键安装（嵌入主窗口内容区）"""
+    """必需环境检测页：yt-dlp / ffmpeg / deno 状态检测 + 一键安装（嵌入主窗口内容区）"""
 
     STATE_COLORS = {"ok": "#1a7f37", "miss": "#c62828", "busy": "#b26a00", "idle": "#888"}
 
@@ -540,7 +584,8 @@ class EnvPage:
 
         ttk.Label(pad, text="必需环境检测",
                   font=("Microsoft YaHei", 15, "bold")).pack(anchor="w")
-        ttk.Label(pad, text="ytdlp4k 需要 yt-dlp（下载内核）与 ffmpeg（音视频合并/转码）。"
+        ttk.Label(pad, text="ytdlp4k 需要三个组件：yt-dlp（下载内核）、ffmpeg（音视频合并/转码）、"
+                            "deno（YouTube 反爬校验的 JS 运行时）。"
                             "缺失的组件点“一键安装缺失组件”即可自动下载配置，无需手动装软件、无需 Python。",
                   foreground="#666", wraplength=700).pack(anchor="w", pady=(4, 12))
 
@@ -631,7 +676,7 @@ class EnvPage:
         if missing:
             self.install_btn.configure(state="normal")
             self.hint_var.set("缺少: " + "、".join(self.info[k]["name"] for k in missing) +
-                              "。点击“一键安装缺失组件”自动下载（首次约需 110 MB）。" +
+                              "。点击“一键安装缺失组件”自动下载（首次约需 150 MB）。" +
                               "若下载缓慢，可在 config.json 中配置 proxy 后点“重新检测”重试。")
         else:
             self.install_btn.configure(state="disabled")

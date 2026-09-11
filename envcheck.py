@@ -4,13 +4,15 @@ envcheck - ytdlp4k 环境检测与一键安装模块
 
 目标：让"别人拿到手也能用"，全部组件免 Python、绿色化随包管理。
 组件清单：
-  1. yt-dlp.exe   —— 下载内核（官方独立 exe，约 30MB）
+  1. yt-dlp.exe   —— 下载内核（官方独立 exe，约 30MB，已内置 EJS 反爬脚本）
   2. ffmpeg/ffprobe —— 合并音视频流 / 转码 / 属性查看（gyan.dev essentials 构建，约 80MB zip）
+  3. deno         —— JS 运行时，解 YouTube 的 n challenge（YouTube 2025 起强制要求，约 40MB zip）
 
 目录约定（exe/pyw 所在目录为 APP_DIR）：
   APP_DIR/tools/yt-dlp.exe
   APP_DIR/tools/ffmpeg/bin/ffmpeg.exe
   APP_DIR/tools/ffmpeg/bin/ffprobe.exe
+  APP_DIR/tools/deno.exe
 
 设计：
   - 检测三级查找：工具目录 > PATH > 常见固定位置
@@ -32,8 +34,11 @@ import zipfile
 YTDLP_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
 FFMPEG_URL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
 FFMPEG_MIRROR_URL = "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip"
+# deno：yt-dlp 推荐（默认启用）的 JS 运行时，用于解 YouTube 的 n challenge。
+# 官方独立版 yt-dlp.exe 自带 yt-dlp-ejs 脚本，但仍必须有 JS 运行时才能执行。
+DENO_URL = "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip"
 
-COMPONENTS = ("ytdlp", "ffmpeg")
+COMPONENTS = ("ytdlp", "ffmpeg", "deno")
 
 
 def app_dir():
@@ -85,6 +90,74 @@ def find_tool(name):
     return _find_fixed(name)
 
 
+def find_local(name):
+    """只在自带 tools/ 内查找（不含 PATH / 系统目录）"""
+    for base in (os.path.join(tools_dir(), "ffmpeg", "bin"), tools_dir()):
+        cand = os.path.join(base, _win(name))
+        if os.path.isfile(cand):
+            return cand
+    return None
+
+
+def find_ytdlp_kernel():
+    """下载内核只用自带 tools/ 的官方独立版。
+
+    原因：PATH 上常有 pip 安装的 yt-dlp，pip 版**不含** yt-dlp-ejs 反爬脚本，
+    且版本往往滞后，会导致 YouTube 报 "n challenge solving failed /
+    The page needs to be reloaded"。绿色版必须用版本可控的自带内核。
+    """
+    return find_local("yt-dlp")
+
+
+def find_js_runtime():
+    """找可用的 JS 运行时（解 YouTube JS challenge 用）。返回 (名字, 路径) 或 None。
+
+    优先自带 tools/deno.exe，其次 PATH 上的 deno / node。
+    """
+    local_deno = find_local("deno")
+    if local_deno:
+        return ("deno", local_deno)
+    for name in ("deno", "node"):
+        p = _find_in_path(name)
+        if p:
+            return (name, p)
+    return None
+
+
+def find_firefox_profile():
+    """返回最近使用的、含 cookies.sqlite 的 Firefox profile 目录。
+
+    不能只写 --cookies-from-browser firefox 让 yt-dlp 自己挑：profiles.ini 里
+    带 Default=1 的 profile 可能是空的（无 cookies.sqlite），yt-dlp 会直接报
+    "could not find firefox cookies database"。这里主动挑 cookie 库最新鲜的那个。
+    """
+    home = os.path.expanduser("~")
+    roaming = os.environ.get("APPDATA") or os.path.join(home, "AppData", "Roaming")
+    local = os.environ.get("LOCALAPPDATA") or os.path.join(home, "AppData", "Local")
+    bases = [
+        os.path.join(roaming, "Mozilla", "Firefox", "Profiles"),
+        os.path.join(local, "Packages",
+                     "Mozilla.Firefox_n80bbvh6b1yt2", "LocalCache", "Roaming",
+                     "Mozilla", "Firefox", "Profiles"),
+    ]
+    cands = []
+    for base in bases:
+        if not base or not os.path.isdir(base):
+            continue
+        try:
+            for name in os.listdir(base):
+                d = os.path.join(base, name)
+                ck = os.path.join(d, "cookies.sqlite")
+                if os.path.isfile(ck):
+                    cands.append((os.path.getmtime(ck), d))
+        except OSError:
+            continue
+    if not cands:
+        return None
+    cands.sort(reverse=True)
+    return cands[0][1]
+
+
 def tool_version(exe, args=None):
     """运行 exe 拿版本号，失败返回 None"""
     if not exe or not os.path.isfile(exe):
@@ -105,7 +178,7 @@ def tool_version(exe, args=None):
 def check_component(key, need_ffprobe=False):
     """检测单个组件，返回 dict：ok/path/version/detail"""
     if key == "ytdlp":
-        exe = find_tool("yt-dlp")
+        exe = find_ytdlp_kernel()
         if not exe:
             return {"ok": False, "path": None, "version": None,
                     "detail": "未找到 yt-dlp（下载内核）"}
@@ -124,6 +197,15 @@ def check_component(key, need_ffprobe=False):
                     "detail": "未找到 ffmpeg / ffprobe（合并与转码）"}
         return {"ok": False, "path": None, "version": None,
                 "detail": "ffmpeg 与 ffprobe 不完整，请重装"}
+    if key == "deno":
+        rt = find_js_runtime()
+        if not rt:
+            return {"ok": False, "path": None, "version": None,
+                    "detail": "未找到 JS 运行时（deno / node）"}
+        name, exe = rt
+        ver = tool_version(exe, ["--version"])
+        return {"ok": True, "path": exe, "version": ver or "已安装",
+                "detail": "%s\n%s%s" % (exe, name, (" %s" % ver) if ver else "")}
     return {"ok": False, "path": None, "version": None, "detail": "未知组件"}
 
 
@@ -294,12 +376,49 @@ def install_ffmpeg(proxy=None, progress=None, cancel=None):
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+def install_deno(proxy=None, progress=None, cancel=None):
+    """下载 deno release zip，解压出 deno.exe 到 tools/"""
+    td = tools_dir()
+    os.makedirs(td, exist_ok=True)
+    dest = os.path.join(td, _win("deno"))
+    tmpdir = tempfile.mkdtemp(prefix="ytdlp4k_deno_")
+    zip_path = os.path.join(tmpdir, "deno.zip")
+    try:
+        if progress:
+            progress("准备下载 deno（JS 运行时，约 40MB）...", 0.0)
+        ok = download(DENO_URL, zip_path, proxy=proxy, progress=progress, cancel=cancel)
+        if not ok or not os.path.isfile(zip_path):
+            return False, "deno 下载失败，请检查网络（必要时在配置中填写代理）"
+        if progress:
+            progress("解压中...", 0.95)
+        with zipfile.ZipFile(zip_path) as zf:
+            src = next((n for n in zf.namelist() if n.lower().endswith("deno.exe")), None)
+            if not src:
+                return False, "deno 压缩包结构异常，请手动安装"
+            with zf.open(src) as fin, open(dest, "wb") as fout:
+                shutil.copyfileobj(fin, fout, 1024 * 1024)
+        if not _run_ver(dest, ["--version"]):
+            try:
+                os.remove(dest)
+            except OSError:
+                pass
+            return False, "deno 校验失败，请重试"
+        ver = tool_version(dest, ["--version"])
+        if progress:
+            progress("deno %s 安装完成" % (ver or ""), 1.0)
+        return True, ver or "ok"
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 def install_component(key, proxy=None, progress=None, cancel=None):
     """统一安装入口。返回 (ok, msg)"""
     if key == "ytdlp":
         return install_ytdlp(proxy=proxy, progress=progress, cancel=cancel)
     if key == "ffmpeg":
         return install_ffmpeg(proxy=proxy, progress=progress, cancel=cancel)
+    if key == "deno":
+        return install_deno(proxy=proxy, progress=progress, cancel=cancel)
     return False, "未知组件: %s" % key
 
 
@@ -318,6 +437,12 @@ def component_info():
             "desc": "负责合并音视频流、帧率转换、视频属性读取",
             "size": "约 80 MB（首次下载，解压后免安装）",
             "what": "没有它 4K/1080P 高清视频无法合并出最终文件",
+        },
+        "deno": {
+            "name": "deno JS 运行时",
+            "desc": "运行 YouTube 反爬校验脚本（n challenge），YouTube 目前强制要求",
+            "size": "约 40 MB（解压后单文件）",
+            "what": "没有它 YouTube 会报「n challenge solving failed / 页面需要重新加载」",
         },
     }
 
