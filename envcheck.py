@@ -48,8 +48,45 @@ def app_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def data_dir():
+    """用户数据目录：装到 Program Files 等只读位置时，工具/配置放这里"""
+    base = os.environ.get("APPDATA") or os.path.join(
+        os.path.expanduser("~"), "AppData", "Roaming")
+    return os.path.join(base, "ytdlp4k")
+
+
+def _writable_dir(path):
+    try:
+        os.makedirs(path, exist_ok=True)
+        probe = os.path.join(path, ".~wtest")
+        with open(probe, "w") as f:
+            f.write("1")
+        os.remove(probe)
+        return True
+    except Exception:
+        return False
+
+
+def _tool_dirs():
+    """工具搜索目录（按优先级）：
+    1. exe 同目录 tools/   —— 安装包内置 / 绿色版
+    2. %APPDATA%\\ytdlp4k\\tools —— 安装到只读位置时的用户级补充
+    """
+    return [os.path.join(app_dir(), "tools"),
+            os.path.join(data_dir(), "tools")]
+
+
 def tools_dir():
-    return os.path.join(app_dir(), "tools")
+    """工具安装目标目录：exe 同目录可写就用它，否则用用户数据目录"""
+    local = os.path.join(app_dir(), "tools")
+    if os.path.isdir(local) or _writable_dir(app_dir()):
+        return local
+    d = os.path.join(data_dir(), "tools")
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        pass
+    return d
 
 
 # ---------------------------------------------------------------- 定位
@@ -79,11 +116,12 @@ def _find_fixed(name):
 
 
 def find_tool(name):
-    """三级查找：工具目录 > PATH > 固定位置"""
-    for base in (os.path.join(tools_dir(), "ffmpeg", "bin"), tools_dir()):
-        cand = os.path.join(base, _win(name))
-        if os.path.isfile(cand):
-            return cand
+    """查找顺序：自带工具目录（exe 同目录 > 用户数据目录）> PATH > 固定位置"""
+    for td in _tool_dirs():
+        for base in (os.path.join(td, "ffmpeg", "bin"), td):
+            cand = os.path.join(base, _win(name))
+            if os.path.isfile(cand):
+                return cand
     p = _find_in_path(name)
     if p:
         return p
@@ -91,11 +129,12 @@ def find_tool(name):
 
 
 def find_local(name):
-    """只在自带 tools/ 内查找（不含 PATH / 系统目录）"""
-    for base in (os.path.join(tools_dir(), "ffmpeg", "bin"), tools_dir()):
-        cand = os.path.join(base, _win(name))
-        if os.path.isfile(cand):
-            return cand
+    """只在自带工具目录内查找（不含 PATH / 系统目录）"""
+    for td in _tool_dirs():
+        for base in (os.path.join(td, "ffmpeg", "bin"), td):
+            cand = os.path.join(base, _win(name))
+            if os.path.isfile(cand):
+                return cand
     return None
 
 

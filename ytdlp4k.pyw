@@ -31,7 +31,42 @@ import envcheck
 APP_NAME = "ytdlp4k"
 # exe/pyw 所在目录（打包后 = exe 目录，config/tools 持久化在这里，而非 _MEIPASS）
 APP_DIR = envcheck.app_dir()
-CONFIG_PATH = os.path.join(APP_DIR, "config.json")
+
+
+def _writable(path):
+    """检测目录是否可写"""
+    try:
+        os.makedirs(path, exist_ok=True)
+        probe = os.path.join(path, ".~write_test")
+        with open(probe, "w", encoding="utf-8") as f:
+            f.write("1")
+        os.remove(probe)
+        return True
+    except Exception:
+        return False
+
+
+def _data_dir():
+    """用户数据目录（安装到 Program Files 等只读位置时用）"""
+    base = os.environ.get("APPDATA") or os.path.join(
+        os.path.expanduser("~"), "AppData", "Roaming")
+    d = os.path.join(base, APP_NAME)
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        pass
+    return d
+
+
+def _config_path():
+    """配置文件位置：优先 exe 同目录（绿色版便携）；
+    装到 Program Files 等只读目录时，自动回退到 %APPDATA%\\ytdlp4k\\config.json"""
+    if _writable(APP_DIR):
+        return os.path.join(APP_DIR, "config.json")
+    return os.path.join(_data_dir(), "config.json")
+
+
+CONFIG_PATH = _config_path()
 
 DEFAULT_CONFIG = {
     "proxy": "",                       # 代理，如 "http://127.0.0.1:7897"，留空 = 不走代理
